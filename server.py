@@ -104,6 +104,14 @@ if __name__ == '__main__':
         default=0
     )
     parser.add_argument(
+        '--group-exchange-key',
+        dest='gex',
+        help='Activate group-exchange key negotiation in server mode (difficult to compute)',
+        nargs='?',
+        const=1,
+        default=0
+    )
+    parser.add_argument(
         '--remote-server',
         required=True,
         dest='remote_server',
@@ -170,11 +178,12 @@ if __name__ == '__main__':
 
         try:
             t = paramiko.Transport(client, gss_kex=False)
-            try:
-                t.load_server_moduli()
-            except:
-                error('(Failed to load moduli -- gex will be unsupported.)')
-                raise
+            if args.gex:
+                try:
+                    t.load_server_moduli()
+                except:
+                    error('(Failed to load moduli -- gex will be unsupported.)')
+                    raise
             t.add_server_key(host_key)
             server = Server()
             try:
