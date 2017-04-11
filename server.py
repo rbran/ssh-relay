@@ -50,9 +50,9 @@ class Server (paramiko.ServerInterface):
     good_pub_key = paramiko.RSAKey(data=decodebytes(data))
 
     def __init__(self):
-        self.command = ""
-        self.username = ""
-        self.password = ""
+        self.command = b''
+        self.username = ''
+        self.password = ''
         self.term = "xterm-256color"
         self.width = 80
         self.height = 20
@@ -79,7 +79,7 @@ class Server (paramiko.ServerInterface):
         return 'password'
 
     def check_channel_exec_request(self, channel, command):
-        ok('Client request command : ' + command)
+        ok('Client request command : ' + command.decode("utf-8"))
         self.command = command
         return True
 
@@ -176,6 +176,10 @@ if __name__ == '__main__':
         client_port = int(addr[1])
         info('Got a connection from %s:%d' % (client_ip, client_port))
 
+        input_f = ''
+        output_f = ''
+        path = ''
+
         try:
             t = paramiko.Transport(client, gss_kex=False)
             if args.gex:
@@ -199,7 +203,7 @@ if __name__ == '__main__':
                 error('*** No channel.')
                 t.close()
                 continue
-            ok('Authenticated!')
+            ok('Received Authentication!')
 
             if args.alerting:
                 chan.send(
@@ -220,58 +224,80 @@ if __name__ == '__main__':
                 chan.send("authentification failed\r\n")
                 chan.close()
                 continue
-            if server.command != "":
-                stdin, stdout, stderr = remote.exec_command(server.command)
-                chan.send(stdout.read())
-                chan.send(stderr.read())
-                chan.close()
-                continue
-            remote_chan = remote.invoke_shell()
+
+            if args.asciinema:
+                now = datetime.datetime.now()
+                path = "%s/%04d-%02d-%02d-%02dH%02d:%02d.%06d_%s-%d" % (
+                    args.asciinema, now.year, now.month, now.day, now.hour, now.minute, now.second, now.microsecond, client_ip, client_port)
+
+                if not os.path.exists(path):
+                    os.makedirs(path)
+
+                asciinema_data_hdr = '{\n'
+                asciinema_data_hdr += '  "version": 1,\n'
+
+                if server.command == b'':
+                    asciinema_data_hdr += '  "command": "$SHELL",\n'
+                    asciinema_data_hdr += '  "width": %d,\n' % (server.width)
+                    asciinema_data_hdr += '  "height": %d,\n' % (server.height)
+                else:
+                    asciinema_data_hdr += '  "command": %s,\n' % (json.dumps(server.command.decode("utf-8")))
+
+                asciinema_data_hdr += '}\n'
+
+                filename = path + "/data.json"
+                f = open(filename, "w")
+                f.write(asciinema_data_hdr)
+                f.close()
+                input_f = open(path + "/input.raw", "wb")
+                output_f = open(path + "/output.raw", "wb")
+
+            remote_chan = ''
+            if server.command != b'':
+                remote_chan = remote.get_transport().open_session()
+                remote_chan.exec_command(server.command)
+            else:
+                remote_chan = remote.invoke_shell()
 
             while True:
                 time.sleep(0.01)
-                server_data = ""
+                server_data = b''
                 if remote_chan.closed or chan.closed:
                     break
                 while True:
                     if remote_chan.closed or chan.closed:
                         break
                     if remote_chan.recv_ready():
-                        server_data += remote_chan.recv(1024)
+                        tmp = remote_chan.recv(1024)
+                        server_data += tmp
+                        output_f.write(tmp)
                     else:
-                        if server_data == "":
+                        if server_data == b'':
                             break
-                        info("new response from server : " + repr(server_data))
                         chan.send(server_data)
-                        if args.asciinema:
-                            now = datetime.datetime.now()
-                            delta = now - last_time
-                            asciinema_data += '    [\n'
-                            asciinema_data += '      %d.%06d,\n' % (
-                                delta.seconds, delta.microseconds)
-                            asciinema_data += '      ' + \
-                                json.dumps(server_data)+'\n'
-                            asciinema_data += '    ],\n'
-                            last_time = datetime.datetime.now()
-                        server_data = ""
+                        server_data = b''
                         time.sleep(0.01)
                         break
-                client_data = ""
+                client_data = b''
                 while True:
                     if remote_chan.closed or chan.closed:
                         break
                     if chan.recv_ready():
-                        client_data += chan.recv(1024)
+                        tmp = chan.recv(1024)
+                        input_f.write(tmp)
+                        client_data += tmp
                     else:
-                        if client_data == "":
+                        if client_data == b'':
                             break
-                        info("new message from client : " + repr(client_data))
                         remote_chan.send(client_data)
-                        client_data = ""
+                        client_data = b''
                         time.sleep(0.01)
                         break
             remote_chan.close()
-            chan.close()
+            chan.close()            
+            if args.asciinema:
+                input_f.close()
+                output_f.close()
         except Exception as e:
             error('*** Caught exception: ' + str(e.__class__) + ': ' + str(e))
             traceback.print_exc()
@@ -279,29 +305,3 @@ if __name__ == '__main__':
                 t.close()
             except:
                 pass
-        if args.asciinema:
-            now = datetime.datetime.now()
-            delta = now - start_time
-            asciinema_data_hdr = '{\n'
-            asciinema_data_hdr += '  "version": 1,\n'
-            asciinema_data_hdr += '  "width": %d,\n' % (server.width)
-            asciinema_data_hdr += '  "height": %d,\n' % (server.height)
-            asciinema_data_hdr += '  "duration": %d.%06d,\n' % (
-                delta.seconds, delta.microseconds)
-            asciinema_data_hdr += '  "command": "/bin/bash",\n'
-            asciinema_data_hdr += '  "title": "",\n'
-            asciinema_data_hdr += '  "env": {\n'
-            asciinema_data_hdr += '    "TERM": "%s",\n' % (server.term)
-            asciinema_data_hdr += '    "SHELL": "/bin/bash"\n'
-            asciinema_data_hdr += '  },\n'
-            asciinema_data_hdr += '  "stdout": [\n'
-
-            asciinema_data = asciinema_data[:-2]
-            asciinema_data += '  ]\n'
-            asciinema_data += '}\n'
-            filename = "%s/%04d_%02d_%02d_%02dH%02d:%02d_%s_%d.json" % (
-                args.asciinema, now.year, now.month, now.day, now.hour, now.minute, now.second, client_ip, client_port)
-            f = open(filename, "w")
-            f.write(asciinema_data_hdr+asciinema_data)
-            f.close()
-            ok("asciinema session saved : %s" % (filename))
